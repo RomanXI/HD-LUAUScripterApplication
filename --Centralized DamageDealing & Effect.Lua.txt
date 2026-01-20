@@ -1,0 +1,439 @@
+--Centralized DamageDealing & Effects Script
+--Meant to be called by players, mobs or any other instance with a HealthValue in the config
+--by tytyrex(Discord) or cgudamg(Roblox)
+
+--Paths
+local rs = game:GetService("ReplicatedStorage")
+local ss = game:GetService("ServerStorage")
+local ev = rs:FindFirstChild("PrintClient") -- to print on client so you can see the output in demo
+local cs = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local TDOE = ss:FindFirstChild("TargetDamageOutputEv")
+
+local temp
+local temp2
+local ModsAvailable = false --[[Value if script has effects modulescripts parented to a folder inside the script.
+Since there can only be 1 script, i had to reformat the effects and add the effects functions inside this one script--]]
+
+
+local function SetUpScript()
+	if not TDOE then
+		TDOE = Instance.new("BindableEvent")
+		TDOE.Parent = ss
+		TDOE.Name = "TargetDamageOutputEv"
+	end
+	
+	temp = script:FindFirstChild("PlrDamages")
+	if not temp then
+		temp = Instance.new("Folder")
+		temp.Parent = script
+		temp.Name = "PlrDamages"
+	end
+	
+	if temp and not temp:FindFirstChildOfClass("NumberValue") then
+		temp2 = Instance.new("NumberValue")
+		temp2.Parent = temp
+		temp2.Name = "PlrDamages"
+	end
+	
+	if script:FindFirstChild("EffectModules") and #script:FindFirstChild("EffectModules"):GetChildren() > 0 then
+		ModsAvailable = true
+	end
+	
+	temp = nil
+	temp2 = nil
+end
+
+SetUpScript()
+
+--Configs---------------------------------------
+local Attribute = "PlayerRepresentative" --[Attribute for non player object,
+--											a number attribute of player's uid]
+
+local HealthValue = "HealthValue" --[A string for a Value Object incase target doesnt have humanoid]
+local ExcludeTag = "Invincible" --[A string for a tag to exclude target from Damage and Effects]
+local DmgTresholdToReward = 0.2 --[Percentage of damage must be dealt to target in order to be count as enough for rewards.]
+local FriendlyFire = true --[In Case you want players(character) in the same folder to not damage each other]
+local PriorityTag = "Priority" --[String tag for players to bypass dmgtresholdtoreward]
+------------------------------------------------
+local DamageModule = {}
+local DamageLog = {}
+-- format = (Damagelog[Target][Attacker] = damage)
+
+--Didnt send Table since value object are more practical, can be accessed by client, other scripts, etc.
+local function DoPlrDmgValue(Plr:Player, TargetChar:Model, Dmg:number)
+	if not TargetChar or not Dmg or not Plr then return end
+	local Folder = TargetChar:FindFirstChild("PlrDamages")
+	if not Folder then return end
+	
+	local function GetValue(Folder)
+		local Value = Folder:FindFirstChild(Plr.Name)
+		if not Value then
+			Value = script.PlrDamages:WaitForChild("Value"):Clone()
+			Value.Name = Plr.Name
+			Value.Parent = Folder
+		end	
+		if not Value.Value then return end
+		Value.Value += Dmg
+	end
+	
+	if not Folder then
+		Folder = script:WaitForChild("PlrDamages"):Clone()
+		Folder.Parent = TargetChar
+	end
+
+	GetValue(Folder)
+end
+
+--Get player instance from player char or the sent instance itself
+local function GetPlr(Inst:Instance)
+	if not Inst then return end
+	
+	local Plr
+	if Inst:IsA("Model") and Players:GetPlayerFromCharacter(Inst) then
+		Plr = Players:GetPlayerFromCharacter(Inst)
+	elseif Players:FindFirstChild(Inst.Name or Inst) then
+		Plr = Inst
+	end
+	
+	if Plr then
+		return Plr
+	else
+		return Inst
+	end
+end
+
+--Stores damages if a player deals it or if a mob with an attribute of player's uid deals it. 
+local function IndexDmg(plr:Player, TargetChar:Model, Dmg:number)
+	
+	local val = false
+	if plr and plr:IsA("Player") then
+		pcall(function()
+			DamageLog[TargetChar] = DamageLog[TargetChar] or {}
+			DamageLog[TargetChar][plr] = (DamageLog[TargetChar][plr] or 0) + Dmg
+		end) 
+		
+		pcall(function()
+			DoPlrDmgValue(plr, TargetChar, Dmg)
+		end)
+		
+		val = true
+	else
+		ev:FireAllClients("CallerNotPlr")
+	end
+	
+	local hum = TargetChar:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum:TakeDamage(Dmg)
+	elseif TargetChar:FindFirstChild(HealthValue) then --So if target doesnt have humanoid atleast itll have this value storing its health
+		TargetChar:FindFirstChild(HealthValue).Value -= Dmg
+	end
+	
+	return val
+end
+
+--Main Local Function for .RegisterDamage and .ApplyEffect
+local function DamageLogic(Caller:Instance, TargetChar:Model, Dmg:number)
+	Caller = GetPlr(Caller)
+	if not TargetChar or not Dmg then return end
+	if not Caller:IsA("Instance") or not TargetChar:IsA("Model") and not TargetChar:IsA("BasePart")
+	and not TargetChar:IsA("MeshPart") or typeof(Dmg) ~= "number" then return end
+
+	if cs:HasTag(TargetChar, ExcludeTag) then return end
+
+	local hum = TargetChar:FindFirstChildOfClass("Humanoid") or TargetChar:FindFirstChild(HealthValue) and TargetChar:FindFirstChild(HealthValue).Value > 0
+	if not hum then return end
+	
+	if FriendlyFire == false and TargetChar.Parent == Caller.Character.Parent then return end
+	
+	if IndexDmg(Caller, TargetChar, Dmg) then
+		TDOE:Fire(Caller, TargetChar, Dmg)
+		ev:FireAllClients("CallerIsPlr")
+	end
+end
+
+local function ClearLog(Inst:Instance)
+	if not Inst then return end
+
+	for _, Inst in pairs(Instance) do
+		if DamageLog[Inst] then
+			DamageLog[Inst] = nil -- if Inst is target
+		else
+			for Target, Attacker in pairs(DamageLog) do
+				DamageLog[Attacker] = nil -- if Inst is attacker
+			end
+		end	
+	end
+end
+
+--Main Public API
+function DamageModule.RegisterDamage(CallerChar:Model, TargetChar:Model, Dmg:number)
+	DamageLogic(CallerChar, TargetChar, Dmg)
+end
+
+function DamageModule.GetLog(Inst:Instance)
+	local Attacker = GetPlr(Inst)
+	if Attacker then
+		return DamageLog[Attacker]
+	elseif Inst:IsA("Model") then
+		if DamageLog[Inst] then
+			return DamageLog[Inst]
+		end
+	end
+end
+
+--Function to be called by external scripts that records Characters death/players leave, Can be used to give rewards(Currently only to players(since i find that theres no use to giving rewards to npc.))
+function DamageModule.CharDied(TargetChar:Model)
+	if not TargetChar then return end
+	if not DamageLog[TargetChar] then return end
+	
+	local MaxHealth = TargetChar:FindFirstChildOfClass("Humanoid") 
+	and TargetChar:FindFirstChildOfClass("Humanoid").MaxHealth
+	or TargetChar:FindFirstChild(HealthValue):GetAttribute("MaxHealth")
+	if not MaxHealth then return end
+	
+	local QualifiedAttackers = {}
+	for Attackers, Damage in pairs(DamageLog[TargetChar]) do
+		if not cs:HasTag(Attackers.Character, PriorityTag) then
+			if Damage >= MaxHealth * DmgTresholdToReward then
+				ev:FireAllClients("Reward To", Attackers.Name)
+				ClearLog(TargetChar)
+			end
+		else
+			ev:FireAllClients("Reward To", Attackers.Name)
+			ClearLog(TargetChar)
+		end
+	end
+end
+
+--Function to be called by external scripts that records Characters death/players leave, Used to clear damageLog of Either Targets or Attackers.
+function DamageModule.ClearLog(Inst:Instance)
+	ClearLog(Inst)
+end
+
+
+---------------------------------------Effects Examples---------------------------------------------
+
+local EffectRegistry = {}
+local ActiveEffects = {} --{ActiveEffects}[EffectName][TargetChar] = true/false
+
+EffectRegistry.Burn = {
+	Data = {
+		DelayInterval = 1, --The effect affect/tick
+		DamagePerDelay = 1,
+	},
+	
+	Activate = function(self, Attacker:Player, TargetChar:Model, Timer:number)
+		if not Attacker or not TargetChar then return end
+		if cs:HasTag(TargetChar, "Burn") then return end
+		local hum = TargetChar:FindFirstChildOfClass("Humanoid") 
+		if not hum and not TargetChar:FindFirstChild("HealthValue") and TargetChar:FindFirstChild("HealthValue").Value > 0 then return end
+		
+		ActiveEffects.Burn = ActiveEffects.Burn or {}
+		if ActiveEffects.Burn[TargetChar] then return end
+
+		cs:AddTag(TargetChar, "Burn")
+		ActiveEffects.Burn[TargetChar] = true
+		task.spawn(function()
+			while TargetChar.Parent and cs:HasTag(TargetChar, "Burn") and ActiveEffects.Burn[TargetChar] do
+				for _, i in pairs(TargetChar:GetChildren()) do
+					if i:IsA("BasePart") or i:IsA("MeshPart") then
+						if i.Color then
+							i.Color = Color3.fromRGB(127, 0, 0)
+						end
+					end
+				end
+				DamageModule.RegisterDamage(Attacker, TargetChar, self.Data.DamagePerDelay)
+				task.wait(self.Data.DelayInterval)
+			end
+		end)
+		if Timer and typeof(Timer) == "number" then
+			task.wait(Timer)
+			self:Deactivate(TargetChar)
+		end
+	end,
+	
+	Deactivate = function(self, TargetChar:Model)
+		if not cs:HasTag(TargetChar, "Burn") then return end
+		cs:RemoveTag(TargetChar, "Burn")
+		ActiveEffects.Burn[TargetChar] = false
+		for _, i in pairs(TargetChar:GetChildren()) do
+			if i:IsA("BasePart") or i:IsA("MeshPart") then
+				if i.Name == "Torso" or i.Name == "UpperTorso" then
+					i.Color = Color3.fromRGB(255, 242, 171)
+				else
+					if i.Color then
+						i.Color = Color3.fromRGB(255, 255, 255)
+					end
+				end
+			end
+		end
+	end,
+}
+
+EffectRegistry.Radioactive = {
+	Data = {
+		DelayInterval = 0.5, --The effect affect/tick
+		DamagePerDelay = 1,
+	},
+	
+	Activate = function(self, Attacker:Player, TargetChar:Model, Timer:number)
+		if not Attacker or not TargetChar then return end
+		if cs:HasTag(TargetChar, "Radioactive") then return end
+		local hum = TargetChar:FindFirstChildOfClass("Humanoid") 
+		if not hum and not TargetChar:FindFirstChild("HealthValue") and TargetChar:FindFirstChild("HealthValue").Value > 0 then return end
+
+		ActiveEffects.Radioactive = ActiveEffects.Radioactive or {}
+		if ActiveEffects.Radioactive[TargetChar] then return end
+
+		cs:AddTag(TargetChar, "Radioactive")
+		ActiveEffects.Radioactive[TargetChar] = true
+		task.spawn(function()
+			while TargetChar.Parent and cs:HasTag(TargetChar, "Radioactive") and ActiveEffects.Radioactive[TargetChar] do
+				local Highlight = TargetChar:FindFirstChild("RadHighlight")
+				if not Highlight then
+					Highlight = Instance.new("Highlight")
+					Highlight.Name = "RadHighlight"
+					Highlight.FillTransparency = 1
+					Highlight.OutlineColor = Color3.fromRGB(18, 255, 1)
+					Highlight.Parent = TargetChar
+				end
+				if Highlight then
+					Highlight.Enabled = true
+				end
+				DamageModule.RegisterDamage(Attacker, TargetChar, self.Data.DamagePerDelay)
+				task.wait(self.Data.DelayInterval)
+			end
+		end)
+		if Timer and typeof(Timer) == "number" then
+			task.wait(Timer)
+			self:Deactivate(TargetChar)
+		end
+	end,
+	
+	Deactivate = function(self, TargetChar:Model)
+		if not cs:HasTag(TargetChar, "Radioactive") then return end
+		cs:RemoveTag(TargetChar, "Radioactive")
+		ActiveEffects.Radioactive[TargetChar] = false
+		local Highlight =  TargetChar:FindFirstChild("RadHighlight")
+		if Highlight then
+			Highlight.Enabled = false
+		end
+	end,
+}
+
+
+---------------------------------------Effect Logics------------------------------------------------
+local Folder = script:WaitForChild("EffectModules", 15)
+
+--Get Effect Modules parented to a folder inside this script(Reformatted to work with only this single script)
+local function GetEffects(input)
+	local result = {}
+	if typeof(input) ~= "table" and typeof(input) ~= "string" then return nil end
+	
+	local function Add(effect) --Add effect to result table
+		if typeof(effect) == "table" then
+			table.insert(result, effect)
+		end
+	end
+	
+	if ModsAvailable and Folder then --Use modulescripts parented to this script (If Available)
+		local function Module(name)
+			local ms = Folder:FindFirstChild(name)
+			if ms then
+				local mod = require(ms)
+				if mod then
+					Add(mod)
+				end
+			end			
+		end
+		
+		if typeof(input) == "string" then
+			Module(input)
+		else
+			for _, name in pairs(input) do
+				Module(tostring(name))
+			end
+		end
+		
+		return result
+	else
+		local function Registry(name) --Use Registry (Effect functions inside this modulescript) if effects modulescripts arent available
+			Add(EffectRegistry[name])
+		end
+		
+		if typeof(input) == "string" then
+			Registry(input)
+		else
+			for _, name in pairs(input) do
+				Registry(tostring(name))
+			end
+		end
+	end
+	
+	return result
+end
+
+
+--Call Childrens(Modulescripts) to apply premade Effects.
+function DamageModule.ApplyEffect(Effect:string, Caller:Instance, TargetChar:Model, Timer:number)--Timer is optional, deactivate effect automatically if it exist
+	Caller = GetPlr(Caller)
+	if not Caller or not TargetChar:IsA("Model") and not TargetChar:IsA("BasePart")
+	and not TargetChar:IsA("MeshPart") or not Effect then return end
+
+	if not TargetChar:FindFirstChildOfClass("Humanoid") and not TargetChar:FindFirstChild(HealthValue) and TargetChar:FindFirstChild(HealthValue).Value > 0 then return end
+	if cs:HasTag(TargetChar, ExcludeTag) then return end
+	
+	local Effects = GetEffects(Effect)
+	if Effects then
+		for _, i in pairs(Effects) do
+			if i.Activate then
+				i:Activate(Caller, TargetChar, Timer or nil)
+			end
+		end
+	end
+end
+
+--Clear ActiveEffects or All ActiveEffects on TargetChar(The Effects Modules Each has the .Deactivate feature)
+function DamageModule.ClearEffects(Effect:string, TargetChar:Model)
+	if not Effect or not TargetChar:IsA("Model") and not TargetChar:IsA("BasePart")
+	and not TargetChar:IsA("MeshPart") then return end
+
+	if not TargetChar:FindFirstChildOfClass("Humanoid") and not TargetChar:FindFirstChild(HealthValue) and TargetChar:FindFirstChild(HealthValue).Value > 0 then return end
+
+	if Effect == "All" then
+		for _, i in pairs(EffectRegistry) do
+			if i.Deactivate then
+				i:Deactivate(TargetChar)
+			end
+		end
+			
+		if ModsAvailable and Folder then
+			for _, i in pairs(Folder:GetChildren()) do
+				if not i:IsA("ModuleScript") then continue end
+				local ok, effect = pcall(require, i)
+				if ok and effect.Deactivate then
+					effect:Deactivate(TargetChar)
+				end
+			end
+			
+			return
+		end
+	end
+	
+	local Effects = GetEffects(Effect)
+	if Effects then
+		for _, i in pairs(Effects) do
+			if i.Deactivate then
+				i:Deactivate(TargetChar)
+			end
+		end
+	end
+end
+
+return DamageModule
+
+
+--NOT ai, Original from me
+--I reformatted this script last minute so its a bit/very messy
+--Pls AR i need this, my money is kinda nonexistant
