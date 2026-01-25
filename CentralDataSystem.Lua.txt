@@ -1,0 +1,314 @@
+--Starter central data system
+--by cgudamg(Roblox), tytyrex(Discord) For HiddenDevs Luau Scripter role
+--if you want to reject the application, atleast give detailed valid reason(please)
+local DataStore = game:GetService("DataStoreService")
+local PlrStore = DataStore:GetDataStore("PlayersData")
+local Players = game:GetService("Players")
+local rs = game:GetService("ReplicatedStorage")
+if not DataStore then return nil end --So module can only be called by serverscripts
+
+local CentralDataSystem = {}
+local PlrData = {}
+local PlrCache = {}
+PlrData.__index = PlrData
+
+local excludedKeys = {
+	Session = true
+	
+}
+
+local clientDoprint = true 
+--print outp/Doprints clientside for demo game
+local function Doprint(str)
+	str = str and tostring(str)
+	if not str then return end
+	
+	if not clientDoprint then
+		print(str)
+	else
+		local ev = game.ReplicatedStorage:FindFirstChild("PrintClient")
+		if not ev then
+			ev = Instance.new("RemoteEvent")
+			ev.Parent = game.ReplicatedStorage
+			ev.Name = "PrintClient"
+		end
+		
+		ev:FireAllClients(str)
+	end
+end
+
+--create metatable for plr
+function PlrData.new(plr)
+	local self = setmetatable({}, PlrData)
+	self.Player = plr
+	self.Data = {}
+	self.IsSaving = false
+	return self
+end
+
+--Set/get plr metatable data
+local function SetPlrData(plr)
+	if not PlrCache[plr] then
+		PlrCache[plr] = PlrData.new(plr)
+	end
+	return PlrCache[plr]
+end
+
+--[[get the class of passed value instance
+i use this to also sort values in datastore--]]
+local function GetClass(val)
+	local values = {
+		Bool = "boolean",
+		Number = "number",
+		String = "string",
+		Rect = "Rect",
+		Table = "table"
+	}
+	
+	for class, check in pairs(values) do
+		if typeof(val) == check then
+			return class
+		end
+	end
+	
+	return nil
+end
+
+--validate schema of data
+local function SchemaCheck(data)
+	if data == nil then return true end --new player pass
+	for class, classtable in pairs(data) do
+		if excludedKeys[class] then
+			continue
+		end
+		
+		if typeof(classtable) ~= "table" then
+			Doprint("wrong schema for classtable") return false
+		end
+
+		for key, value in pairs(classtable) do
+			if not GetClass(value) then
+				Doprint("wrong schema for val") return false
+			end
+		end
+	end
+	
+	return true
+end
+
+local function DataPath(plr)
+	if plr then return ("Player_" ..tostring(plr.UserId)) end
+	Doprint("No plr instance")
+	return nil
+end
+
+
+local function GetCachedData(plr, key)
+	if not plr then Doprint("No player instance passed(GetCachedData)") end
+	
+	local metatable = SetPlrData(plr)
+	if not metatable or not key then Doprint("(GetCachedData)Invalid request,", "plr:" ..(plr and plr.Name or "nil").. "key:" ..key) return end
+	if not metatable.Data then
+		Doprint("(GetCachedData)Failed to find metatable data for player:" ..(plr and plr.Name or "nil"))
+		return nil
+	end
+		
+	for class, classtable in pairs(metatable.Data) do
+		if classtable[key] ~= nil then
+			return class, key, classtable[key]
+		end
+	end
+	
+	return nil
+end
+
+--return call functions
+function CentralDataSystem.Get(plr)
+	local data = SetPlrData(plr)
+	if not data then Doprint("(CDS.Get())Failed to set/find existing data metatable") return nil end
+	
+	return {
+		GetSession = function() return data:GetSession() end,
+		GetData = function(_, key) return data:GetData(key) end,
+		SetData = function(_, key, val) data:SetData(key, val) end,
+		DeleteData = function(_, key) data:DeleteData(key) end,
+		Save = function() data:Save() end,
+		Load = function() data:Load() end,
+	}
+end
+
+
+--SessionLock
+local cursessionId = game.JobId
+function PlrData:GetSession()
+	local plr = self.Player
+	local active = false
+	local ok, err = pcall(function()
+		DataStore:GetDataStore("PlayersData"):UpdateAsync(DataPath(plr), function(old)
+			old = old or {}
+			
+			if old.Session and old.Session ~= cursessionId then
+				Doprint("another session is active(GetSession)")
+				active = true
+				return old
+			end
+			
+			old.Session = cursessionId
+			return old
+		end)
+	end)
+	
+	if not ok then Doprint(err) end
+	
+	return active
+end
+
+
+--load and sync meta data with datastore
+function PlrData:Load()
+	local plr = self.Player
+	local Data
+	
+	if self:GetSession() then
+		plr:Kick("Another Session is Active")
+	end
+
+	local ok, err = pcall(function()
+		Data = PlrStore:GetAsync(DataPath(plr))
+		if Data == nil then Doprint("(Load())No existing Data for plr:" ..plr.Name..", Load() Cancelled") return end
+		if Data and not SchemaCheck(Data) then Doprint("Invalid data schema(Load)") return end
+	end)
+
+	
+	if Data then
+		for class, classTable in pairs(Data) do
+			if class ~= "Session" then
+				self.Data[class] = Data[class] or {}
+
+				for key, value in pairs(classTable) do
+					self.Data[class][key] = value
+				end
+			end
+		end
+	end
+end
+
+--return value from metatable, doesnt modify cache
+function PlrData:GetData(key)
+	if not key or typeof(key) ~= "string" then
+		Doprint("called without valid key(GetData)") return
+	end
+	
+	local class, key, val = GetCachedData(self.Player, key)
+	if not class or not key or not val then
+		return nil
+	end
+	
+	local Val = self.Data[class][key]
+	
+	if Val then return Val end
+	Doprint("(GetData)Couldnt Find value to return")
+	return nil
+end
+
+function PlrData:DeleteData(key)
+	if not key or typeof(key) ~= "string" then
+		Doprint("called without valid key(DeleteData)") return
+	end
+	
+	local class, key, val = GetCachedData(self.Player, key)
+	if not class or not key or not val then
+		return
+	end
+
+	self.Data[class][key] = nil
+end
+
+--set value of passed data (to metatable)
+--Keys are assumed unique across data classes
+function PlrData:SetData(key, newval)
+	if not key or typeof(key) ~= "string" then
+		Doprint("called without valid key(SetData)") return
+	end
+	
+	if not newval or not GetClass(newval) then
+		Doprint("(SetData)No NewVal or Invalid NewVal type, " ..type(newval))
+		return
+	end
+	
+	local class = GetClass(newval)
+	self.Data[class] = self.Data[class] or {}
+	self.Data[class][key] = newval
+	--No cache lookup to allow new data creation
+end
+
+--save metatable data to dss
+function PlrData:Save(clearSession)
+	if self.IsSaving == true then return end
+	local plr = self.Player
+	
+	--Atomic write savedata
+	local ok, err = pcall(function()
+		PlrStore:UpdateAsync(DataPath(plr), function(old)
+			old = old or {}
+			
+			self.IsSaving = true
+
+			for class, classtable in pairs(self.Data) do
+				if class ~= "Session" then
+					old[class] = old[class] or {} 
+					for key, val in pairs(classtable) do
+						old[class][key] = val
+					end
+				end
+			end
+			
+			if clearSession then
+				old.Session = nil
+			end
+
+			return old
+		end)
+	end)
+	
+	if not ok then
+		Doprint(tostring(err))
+	end
+	
+	if not plr:IsDescendantOf(Players) then --prevent clearing player data if they still exist ingame
+		PlrCache[plr] = nil
+	end
+	
+	self.IsSaving = false
+end
+
+Players.PlayerRemoving:Connect(function(plr)
+	local dat = PlrCache[plr]
+	if dat then
+		dat:Save(true)
+	end
+end)
+
+--AutoSave loop
+task.spawn(function()
+	while task.wait(300) do
+		for plr, plrdata in pairs(PlrCache) do
+			if plr and plr:IsDescendantOf(Players) then
+				if plrdata and plrdata.Player then
+					local ok, err = pcall(function()
+						plrdata:Save(false)
+					end)
+
+					if not ok then
+						Doprint("AutoSave error", tostring(err))
+					end
+				end
+			else
+				PlrCache[plrdata.Player] = nil
+			end
+		end
+	end
+end)
+
+
+return CentralDataSystem
